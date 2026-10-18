@@ -139,22 +139,110 @@ ACT.link = d => {
 ACT.unlink = d => { const c = S.cards.find(x => x.id === d.id); c.exp = null; log(S.me, '카드 연결 끊기', c.vendor); save(); render(); };
 ACT.askReg = d => { const c = S.cards.find(x => x.id === d.id); const owner = c.card === '5591' ? 'u3' : 'u1'; notify(owner, '카드 #' + c.card + ' ' + c.date.slice(5) + ' ' + c.vendor + ' ' + won(c.amt) + '원: 등록된 지출이 없습니다. 영수증을 올려 주세요.'); save(); toast(U(owner).name + '님에게 등록 요청을 보냈습니다.'); };
 
-/* ---------- 결산·출력 > 결산 (M7 지출결의서) ---------- */
+/* ---------- 결산·출력 > 결산 (M7 재정팀 공식 지출결의서·행사 예결산 보고서 양식 동기화) ---------- */
+const CARD_META = {
+  '3418': { no: '3418', mno: 'M913418', vcode: '96984', dept: '총무국', name: '총무국 공용' },
+  '2171': { no: '2171', mno: 'M912171', vcode: '96985', dept: '총무국', name: '총무국 차량' },
+  '6026': { no: '6026', mno: 'M916026', vcode: '96986', dept: '총무국', name: '야근식대' },
+  '5591': { no: '5591', mno: 'M915591', vcode: '96987', dept: '기획국', name: '기획국 공용' },
+};
+const DEPT_TR = { 총무국: ['10024', '총무국'], 기획국: ['10021', '기획국'], 재정국: ['10025', '재정국'], 임원실: ['10020', '임원실'] };
+const BGT_CODE = { '81101': '22311', '81201': '22411', '83001': '22261', '82201': '22231', '82601': '22241', '81401': '22221', '83101': '22273', '83102': '22272', '82501': '22281', '45102': '21122' };
+const fmtYmd = d => d.slice(5, 7) + '-' + d.slice(8, 10) + '-' + d.slice(2, 4);
+const fmtAm = v => v ? won(v) : '-';
+const sumAmt = (arr, fn) => arr.reduce((s, x) => s + (fn ? fn(x) : x.amt), 0);
+const groupEntries = (rows, keyFn) => { const g = {}; rows.forEach(r => (g[keyFn(r)] = g[keyFn(r)] || []).push(r)); return Object.entries(g); };
+const cardMetaOf = no => CARD_META[no] || { no: no || '0000', mno: 'M91' + (no || '0000'), vcode: '96980', dept: '총무국', name: '법인카드' };
+
+function officialGyeolDoc(title, rows, kind) {
+  const isCard = kind === 'C';
+  let h = '<div class="doc"><div class="t" style="letter-spacing:.05em">' + esc(title) + '</div><div class="row" style="font-weight:700;margin:8px 0 4px"><span>1.전체내역</span><span class="grow"></span><small class="mut">단위:원</small></div>' +
+    '<table><thead><tr><th style="width:6%">순</th><th style="width:16%">계정과목</th><th style="width:10%">지출일자</th><th>적요</th><th style="width:16%">가맹점명</th><th style="width:12%;text-align:right">지출액</th><th style="width:10%">지출자</th></tr></thead><tbody>';
+  const renderLine = (e, idx) => '<tr><td style="text-align:center">' + idx + '</td><td style="text-align:center">' + esc(e.item) + '</td><td style="text-align:center">' + fmtYmd(e.date) + '</td><td>' + esc(e.purpose) + '</td><td>' + esc(e.vendor) + '</td><td class="n">' + fmtAm(e.amt) + '</td><td style="text-align:center">' + esc(isCard ? '#' + e.card : U(claimPayTo(e)).name) + '</td></tr>';
+  if (!rows.length) {
+    h += '<tr><td colspan="7" style="text-align:center">해당 지출이 없습니다.</td></tr>';
+  } else if (isCard) {
+    groupEntries(rows, e => e.card).forEach(([no, list]) => {
+      h += list.map((e, i) => renderLine(e, i + 1)).join('') +
+        '<tr style="background:#f2f7fc;font-weight:700"><td colspan="5" style="text-align:center">소계 (#' + esc(no) + ')</td><td class="n">' + fmtAm(sumAmt(list)) + '</td><td></td></tr>';
+    });
+    h += '<tr style="background:#bdd7ee;font-weight:800"><td colspan="5" style="text-align:center">총  합  계</td><td class="n">' + fmtAm(sumAmt(rows)) + '</td><td></td></tr>';
+  } else {
+    h += rows.map((e, i) => renderLine(e, i + 1)).join('') +
+      '<tr style="background:#bdd7ee;font-weight:800"><td colspan="5" style="text-align:center">합  계</td><td class="n">' + fmtAm(sumAmt(rows)) + '</td><td></td></tr>';
+  }
+  h += '</tbody></table>';
+  if (isCard) {
+    const byAccCard = {};
+    rows.forEach(e => { const k = e.item + '|' + e.card + '|' + (+e.date.slice(5, 7)); byAccCard[k] = (byAccCard[k] || 0) + e.amt; });
+    h += '<div style="font-weight:700;margin:14px 0 4px">2.계정과목·카드별 합산액</div><table><thead><tr><th style="width:6%">순</th><th>계정과목</th><th>카드번호</th><th>비고</th><th style="text-align:right">지출액</th></tr></thead><tbody>' +
+      Object.entries(byAccCard).map(([k, v], i) => { const [acc, cno, mm] = k.split('|'); return '<tr><td style="text-align:center">' + (i + 1) + '</td><td style="text-align:center">' + esc(acc) + '</td><td style="text-align:center">#' + esc(cno) + '</td><td style="text-align:center">' + mm + '월</td><td class="n">' + fmtAm(v) + '</td></tr>'; }).join('') +
+      '<tr style="background:#bdd7ee;font-weight:800"><td colspan="4" style="text-align:center">합  계</td><td class="n">' + fmtAm(sumAmt(rows)) + '</td></tr></tbody></table>';
+  } else {
+    const byAcc = {};
+    rows.forEach(e => { byAcc[e.item] = (byAcc[e.item] || 0) + e.amt; });
+    h += '<div style="font-weight:700;margin:14px 0 4px">2.계정별 합산액</div><table><thead><tr><th style="width:6%">순</th><th>계정과목</th><th style="text-align:right">지출액</th><th>비고</th></tr></thead><tbody>' +
+      Object.entries(byAcc).map(([k, v], i) => '<tr><td style="text-align:center">' + (i + 1) + '</td><td style="text-align:center">' + esc(k) + '</td><td class="n">' + fmtAm(v) + '</td><td></td></tr>').join('') +
+      '<tr style="background:#bdd7ee;font-weight:800"><td colspan="2" style="text-align:center">합  계</td><td class="n">' + fmtAm(sumAmt(rows)) + '</td><td></td></tr></tbody></table>';
+    const rm = groupEntries(rows, e => claimPayTo(e));
+    h += '<div style="font-weight:700;margin:14px 0 4px">3.송금 요청액</div><table><thead><tr><th style="width:6%">순</th><th>은행명</th><th colspan="2">송금계좌</th><th>거래처/예금주</th><th style="text-align:right">금액</th></tr></thead><tbody>' +
+      rm.map(([uid, list], i) => { const acc = list[0].other || accOf(uid) || { bank: '-', no: '-', holder: U(uid).name }; return '<tr><td style="text-align:center">' + (i + 1) + '</td><td style="text-align:center">' + esc(acc.bank) + '</td><td colspan="2" style="text-align:center">' + esc(acc.no) + '</td><td style="text-align:center">' + esc(acc.holder) + '</td><td class="n">' + fmtAm(sumAmt(list)) + '</td></tr>'; }).join('') +
+      '<tr style="background:#bdd7ee;font-weight:800"><td colspan="5" style="text-align:center">합  계</td><td class="n">' + fmtAm(sumAmt(rows)) + '</td></tr></tbody></table>';
+  }
+  return h + '</div>';
+}
+
+function officialEventReportDoc(ev) {
+  const rs = S.expenses.filter(e => e.event === ev.id && e.status !== 'draft' && e.status !== 'rejected');
+  const C = rs.filter(e => e.kind === 'card'), P = rs.filter(e => e.kind !== 'card');
+  const advs = S.advances.filter(a => !a.done && a.type === '선급' && ev.name.split(' ').some(w => w.length >= 2 && a.purpose.includes(w)));
+  const sp = sumAmt(rs), prevEv = ev.from && EV(ev.from);
+  let h = '<div class="doc"><div class="t" style="letter-spacing:.05em">' + esc(ev.dept) + ' 예결산 보고서</div>' +
+    '<table><tbody><tr><th rowspan="4" style="width:70px">행  사<br>개  요</th><th style="width:90px">행사명</th><td><b>' + esc(ev.name) + '</b></td></tr>' +
+    '<tr><th>주최기관</th><td>세계평화통일가정연합</td></tr><tr><th>일    시</th><td>' + esc(ev.date) + '</td></tr><tr><th>장    소</th><td>' + esc(ev.place || '협회 본부') + '</td></tr></tbody></table>' +
+    '<div style="font-weight:700;margin:14px 0 4px">■ 총 집행액</div><table><thead><tr><th style="width:30%">집행금액</th><th>산 출 근 거</th></tr></thead><tbody><tr><td class="n"><b>' + fmtAm(sp) + '</b></td><td>법인카드 ' + won(sumAmt(C)) + ' + 세금계산서 0 + 개인지출 ' + won(sumAmt(P)) + ' + 선급금 0' + (advs.length ? ' (미정산 선급 ' + won(sumAmt(advs)) + '원 별도)' : '') + '</td></tr></tbody></table>' +
+    '<div style="font-weight:700;margin:14px 0 4px">■ 예산운영 결산내역</div><table><thead><tr><th colspan="2">분    류</th><th>적     요</th><th style="text-align:right">배정액</th><th style="text-align:right">집행액</th><th style="text-align:right">증감액</th></tr></thead><tbody>' +
+    groupEntries(rs, e => e.item).concat(rs.some(e => e.item === ev.item) ? [] : [[ev.item, []]]).map(([it, list]) => { const bud = it === ev.item ? ev.budget : 0, ex = sumAmt(list), diff = ex - bud; return '<tr><td style="text-align:center">진행비</td><td style="text-align:center">' + esc(it) + '</td><td>' + esc(list.map(e => e.purpose).join(', ')) + '</td><td class="n">' + fmtAm(bud) + '</td><td class="n">' + fmtAm(ex) + '</td><td class="n">' + (diff ? won(diff) : '-') + '</td></tr>'; }).join('') +
+    '<tr style="background:#bdd7ee;font-weight:800"><td colspan="3" style="text-align:center">합    계</td><td class="n">' + fmtAm(ev.budget) + '</td><td class="n">' + fmtAm(sp) + '</td><td class="n">' + (sp - ev.budget ? won(sp - ev.budget) : '-') + '</td></tr></tbody></table>' +
+    '<div class="mut" style="margin-top:4px">* 직원 교통비 및 식대는 부서 경상비로 대체</div>' +
+    '<div style="font-weight:700;margin:14px 0 4px">■ 예산운영 결산분류</div><table><thead><tr><th>지출 분류</th><th style="text-align:right">집행금액</th></tr></thead><tbody>' +
+    groupEntries(C, e => cardMetaOf(e.card).mno + '|' + (+e.date.slice(5, 7))).map(([k, list]) => { const [mno, mm] = k.split('|'); return '<tr><td style="text-align:center">법인카드(' + esc(mno) + ') ' + mm + '월</td><td class="n">' + fmtAm(sumAmt(list)) + '</td></tr>'; }).join('') +
+    '<tr><td style="text-align:center">개인지출</td><td class="n">' + fmtAm(sumAmt(P)) + '</td></tr>' +
+    '<tr style="background:#bdd7ee;font-weight:800"><td style="text-align:center">총 합계액</td><td class="n">' + fmtAm(sp) + '</td></tr></tbody></table></div>';
+  return h;
+}
+
 V['settle/report'] = () => {
-  const dept = F.rdept || ME().dept;
-  const list = S.expenses.filter(e => e.dept === dept && e.status !== 'draft' && e.status !== 'rejected' && e.date.slice(0, 7) === '2026-10');
+  const dept = F.rdept || ME().dept, rk = F.rk || 'P';
   const depts = Object.keys(S.lines);
-  let h = '<div class="c noprint"><div class="row"><b>지출결의서 미리 보기</b><span class="mut">결재가 끝났거나 진행 중인 10월 지출</span><span class="grow"></span><select id="rdept">' + depts.map(x => '<option' + (x === dept ? ' selected' : '') + '>' + x + '</option>').join('') + '</select><button class="btn prt" onclick="window.print()">인쇄</button></div></div>';
-  const byItem = {}; list.forEach(e => spentOf(e).forEach(p => { byItem[p.item] = (byItem[p.item] || 0) + p.amt; }));
-  h += '<div class="doc"><div class="t">지 출 결 의 서</div><div class="row" style="margin-bottom:6px"><span>결의부서: ' + dept + ' (' + (S.jr.g20[dept] || '') + ')</span><span class="grow"></span><span>2026년 10월분 · 작성 ' + TODAY + '</span></div>' +
-    '<div class="sg" style="margin:0 0 8px"><span>담당</span><span>' + (dept === '기획국' ? '팀장' : '국장') + '</span><span>' + (dept === '기획국' ? '국장' : '사무총장') + '</span><span>재정</span></div>' +
-    '<table><thead><tr><th>예산과목</th><th>계정코드</th><th style="text-align:right">금액</th></tr></thead><tbody>' + Object.entries(byItem).map(([k, v]) => '<tr><td>' + k + '</td><td>' + (S.jr.codes[k] || '') + '</td><td style="text-align:right">' + won(v) + '</td></tr>').join('') +
-    '<tr><th>합계</th><th></th><th style="text-align:right">' + won(list.reduce((a, e) => a + e.amt, 0)) + '</th></tr></tbody></table><div style="height:10px"></div>' +
-    '<table><thead><tr><th>날짜</th><th>쓴 사람</th><th>내용</th><th>구분</th><th>증빙</th><th style="text-align:right">금액</th></tr></thead><tbody>' +
-    (list.length ? list.map(e => '<tr><td>' + e.date.slice(5) + '</td><td>' + esc(U(e.uid).name) + '</td><td>' + esc(e.vendor + ' · ' + e.purpose) + '</td><td>' + kindText(e) + '</td><td>' + (e.receipt ? '영수증' : e.sub ? '대체 사유서' : '없음') + '</td><td style="text-align:right">' + won(e.amt) + '</td></tr>').join('') : '<tr><td colspan="6" style="text-align:center">없음</td></tr>') + '</tbody></table></div>';
+  const allDept = S.expenses.filter(e => (e.dept === dept || (rk === 'P' && (e.bdept === dept || e.dept === dept))) && e.status !== 'draft' && e.status !== 'rejected' && e.date.slice(0, 7) === '2026-10');
+  const listP = allDept.filter(e => e.kind !== 'card'), listC = allDept.filter(e => e.kind === 'card');
+  const evs = S.events.filter(v => v.year === 2026), curEv = EV(F.rev) || evs[0];
+  let h = '<div class="c noprint"><div class="row"><b>재정팀 공식 결산 서식 미리 보기</b><span class="mut">결재 진행·완료된 2026년 10월 지출 기준</span><span class="grow"></span>' +
+    [['P', '지출결의서(개인·청구)'], ['C', '지출결의서(법인카드)'], ['E', '행사 예결산 보고서']].map(([k, l]) => '<button class="st ' + (rk === k ? 'on' : '') + '" data-a="setRk" data-k="' + k + '">' + l + '</button>').join('') +
+    (rk === 'E' ? '<select id="rev">' + evs.map(v => '<option value="' + v.id + '"' + (v.id === curEv.id ? ' selected' : '') + '>' + v.name + '</option>').join('') + '</select>' : '<select id="rdept">' + depts.map(x => '<option' + (x === dept ? ' selected' : '') + '>' + x + '</option>').join('') + '</select>') +
+    '<button class="btn" data-a="repCsv">엑셀용 CSV</button><button class="btn prt" onclick="window.print()">인쇄</button></div></div>';
+  if (rk === 'E') {
+    h += officialEventReportDoc(curEv);
+  } else if (rk === 'C') {
+    const cTitle = listC.length ? ' (' + cardMetaOf(listC[0].card).mno + Array.from(new Set(listC.slice(1).map(e => e.card))).map(c => ', #' + c).join('') + ')' : '';
+    h += officialGyeolDoc('지출결의서_(' + dept + ') 2026년 10월 _ 법인카드 정산' + cTitle, listC, 'C');
+  } else {
+    h += officialGyeolDoc('지출결의서_(' + dept + ') 2026년 10월 _ 개인정산·청구', listP, 'P');
+  }
   return h;
 };
-document.addEventListener('change', ev => { if (ev.target.id === 'rdept') { F.rdept = ev.target.value; render(); } });
+ACT.setRk = d => { F.rk = d.k; render(); };
+ACT.repCsv = () => {
+  const dept = F.rdept || ME().dept, rk = F.rk || 'P';
+  const rows = S.expenses.filter(e => e.dept === dept && e.status !== 'draft' && e.status !== 'rejected' && e.date.slice(0, 7) === '2026-10' && (rk === 'C' ? e.kind === 'card' : e.kind !== 'card'));
+  const csv = [['순', '계정과목', '지출일자', '적요', '가맹점명', '지출액', '지출자']].concat(rows.map((e, i) => [i + 1, e.item, fmtYmd(e.date), '"' + e.purpose.replace(/"/g, "'") + '"', '"' + e.vendor.replace(/"/g, "'") + '"', e.amt, rk === 'C' ? '#' + e.card : U(claimPayTo(e)).name]));
+  download('지출결의서_' + dept + '_' + (rk === 'C' ? '법인카드' : '개인정산') + '_2026-10.csv', csv.map(r => r.join(',')).join('\r\n'), 'text/csv;charset=utf-8');
+};
+document.addEventListener('change', ev => {
+  if (ev.target.id === 'rdept') { F.rdept = ev.target.value; render(); }
+  if (ev.target.id === 'rev') { F.rev = ev.target.value; render(); }
+});
 
 /* ---------- 지급·송금 (M10, E11) ---------- */
 V['settle/pay'] = () => {
@@ -215,42 +303,79 @@ ACT.paid = d => {
   log(S.me, '지급 완료', b.id); save(); render(); toast('지급 완료로 바꿨습니다. 받는 사람의 「내가 받을 돈」이 「받음」으로 바뀝니다.');
 };
 
-/* ---------- 전표·G20 (M6) ---------- */
+/* ---------- 전표·G20 (M6 총무국 G20 분개 규칙) ---------- */
+function g20Memo(e, item) {
+  const mm = +e.date.slice(5, 7), dept = e.bdept || e.dept, who = U(claimPayTo(e)).name, c = cardMetaOf(e.card);
+  const ev = e.event ? EV(e.event) : null;
+  if (ev) {
+    const body = '[행사결산]' + ev.name + ': ' + item + '(' + e.purpose + ')';
+    return e.kind === 'card' ? body + ' : ' + c.mno + '(' + c.dept + ')' : body + ' (개인결재: ' + who + ')';
+  }
+  if (e.kind === 'card' && c.no === '2171') return c.mno + ' ' + dept + ' ' + mm + '월 법인차량 운영 법인카드 정산: ' + e.purpose;
+  if (e.kind === 'card' && (c.no === '6026' || /야근/.test(e.purpose))) return c.mno + ' ' + mm + '월 ' + dept + ' 야근식대(' + who + ')';
+  if (e.ck === '야근식대') return dept + ' ' + mm + '월 개인지출(' + who + ') 정산: 야근식대(' + ((e.calc && e.calc.명단) || [who]).join('·') + ')';
+  if (item === '소모품비') return e.kind === 'card' ? c.mno + ' ' + mm + '월 ' + dept + ' 소모품비: ' + e.purpose : mm + '월 ' + dept + ' 소모품비: ' + e.purpose + ' (' + who + ')';
+  if (e.kind === 'card') return c.mno + ' ' + mm + '월 ' + dept + ' ' + e.purpose;
+  return dept + ' ' + mm + '월 개인지출(' + who + ') 정산: ' + e.purpose;
+}
 function journal() {
   const J = S.jr, out = [];
   const conf = S.expenses.filter(e => ['confirmed', 'scheduled', 'paid'].includes(e.status));
-  const supplies = conf.filter(e => e.item === '소모품비' && !e.split);
-  conf.filter(e => !supplies.includes(e)).forEach(e => out.push(voucher([e], e)));
-  if (supplies.length) out.push(voucher(supplies, supplies[0], '10월 소모품비 월 합산'));
-  function voucher(list, e0, title) {
-    const lines = [];
-    list.forEach(e => {
-      const tail = e.kind === 'claim' ? '(청구정산)' : e.kind === 'personal' ? '(개인정산)' : '';
-      spentOf(e).forEach(p => lines.push({ side: '차', code: J.codes[p.item] || '?', name: p.item, vendor: e.vendor, amt: p.amt, desc: e.purpose + tail }));
-      const cr = e.kind === 'card' ? { code: J.card, name: '미지급금(법인카드)', vendor: '법인카드 #' + e.card } : { code: e.status === 'paid' && (e.paidAt || '').slice(8) <= '25' ? J.bank : J.personal, name: e.status === 'paid' ? '보통예금' : '미지급금(개인)', vendor: J.pvendor + ' ' + U(claimPayTo(e)).name };
-      lines.push({ side: '대', code: cr.code, name: cr.name, vendor: cr.vendor, amt: e.amt, desc: e.purpose + tail });
-      if (e.kind === 'claim') lines.push({ side: '대', code: J.adv, name: '선급금(청구 연결)', vendor: '', amt: 0, desc: '청구정산 연결 줄' });
+  const groups = {};
+  conf.forEach(e => {
+    const dept = e.bdept || e.dept, mm = +e.date.slice(5, 7), who = U(claimPayTo(e)).name, ev = e.event ? EV(e.event) : null;
+    let key, title;
+    if (ev) {
+      key = 'E|' + ev.id + '|' + e.kind;
+      title = '[행사결산]' + ev.name + ' ' + (e.kind === 'card' ? '법인카드' : '개인정산');
+    } else if (e.kind === 'card') {
+      const c = cardMetaOf(e.card), sup = e.item === '소모품비';
+      key = 'C|' + c.no + (sup ? '|소모품' : '');
+      title = c.mno + ' ' + mm + '월 ' + dept + (c.no === '2171' ? ' 법인차량 운영 법인카드 정산' : c.no === '6026' ? ' 야근식대' : sup ? ' 소모품비' : ' 법인카드 정산');
+    } else {
+      key = 'P|' + dept + '|' + who + '|' + e.kind;
+      title = dept + ' ' + mm + '월 개인지출(' + who + ') 정산';
+    }
+    const g = groups[key] = groups[key] || { no: 0, date: e.date, dept, g20: J.g20[dept] || '1041', title, lines: [] };
+    if (e.date > g.date) g.date = e.date;
+    spentOf(e).forEach(p => {
+      const acct = ev ? '주요행사비' : p.item, code = J.codes[acct] || '?', bgt = BGT_CODE[code] ? '집행 ' + BGT_CODE[code] : '집행';
+      const m = g20Memo(e, p.item), tr = DEPT_TR[dept] || DEPT_TR['총무국'];
+      if (e.kind === 'card') {
+        const c = cardMetaOf(e.card), ctr = c.vcode + ' 법인카드(#' + c.no + ')';
+        g.lines.push({ side: '차', code, name: acct, vendor: ctr, amt: p.amt, desc: m, bgt });
+        g.lines.push({ side: '대', code: J.card, name: '미지급금(법인카드)', vendor: ctr, amt: p.amt, desc: m, bgt: '일반' });
+      } else {
+        const dtr = tr[0] + ' ' + tr[1];
+        g.lines.push({ side: '차', code, name: acct, vendor: dtr, amt: p.amt, desc: m, bgt });
+        g.lines.push({ side: '대', code: J.personal, name: '미지급금', vendor: dtr, amt: p.amt, desc: m, bgt: '일반' });
+      }
     });
-    return { no: 0, date: list[list.length - 1].date, dept: e0.bdept || e0.dept, g20: J.g20[e0.bdept || e0.dept], title: title || e0.purpose, lines, ok: lines.filter(l => l.side === '차').reduce((a, l) => a + l.amt, 0) === lines.filter(l => l.side === '대').reduce((a, l) => a + l.amt, 0) };
-  }
-  out.sort((a, b) => a.date < b.date ? -1 : 1).forEach((v, i) => v.no = i + 1);
+  });
+  Object.values(groups).sort((a, b) => a.date < b.date ? -1 : 1).forEach((v, i) => {
+    v.no = i + 1;
+    const dr = v.lines.filter(l => l.side === '차').reduce((a, l) => a + l.amt, 0);
+    const cr = v.lines.filter(l => l.side === '대').reduce((a, l) => a + l.amt, 0);
+    v.ok = dr === cr && v.lines.filter(l => l.side === '차' && l.amt > 0).length === v.lines.filter(l => l.side === '대').length;
+    out.push(v);
+  });
   return out;
 }
 V['settle/journal'] = () => {
   const vs = journal();
-  let h = '<div class="note t">재정 확인이 끝난 지출로 전표를 만듭니다. 분개 규칙(서비스 설정 > 분개 규칙)을 따르고, 결과는 굿바이G20 입력용 파일로 받습니다. 차변·대변 합이 다르면 빨간 표시가 납니다.</div>';
+  let h = '<div class="note t">재정 확인이 끝난 지출로 총무국 굿바이G20 분개 규칙(건별 1:1 차·대 쌍, 법인카드 M번호 적요 및 카드 거래처코드, 개인정산 부서 거래처 10024, 총무국 청구는 받는 사람 개인정산 2줄, 예산과목코드)에 맞춘 전표 초안을 만듭니다.</div>';
   h += '<div class="c"><div class="row"><h3 style="margin:0">전표 ' + vs.length + '장 <span class="mut">결의부서 코드는 G20 기준</span></h3><span class="grow"></span><button class="btn" data-a="jrCsv">G20 입력 파일(CSV)</button><button class="btn" data-a="jrJson">JSON</button></div>';
   vs.forEach(v => {
     h += '<div style="margin-top:12px"><div class="row"><b>#' + v.no + ' ' + v.date + ' · ' + esc(v.title) + '</b><span class="mut">결의부서 ' + v.dept + ' ' + v.g20 + '</span><span class="grow"></span>' + (v.ok ? '<span class="bd ok">차대 일치</span>' : '<span class="bd rd">차대 불일치</span>') + '</div>' +
-      '<table class="tb" style="table-layout:fixed"><thead><tr><th style="width:48px">구분</th><th style="width:24%">계정</th><th style="width:20%">거래처</th><th>적요</th><th class="right" style="width:110px">금액</th></tr></thead><tbody>' +
-      v.lines.map(l => '<tr><td>' + l.side + '</td><td>' + l.code + ' ' + esc(l.name) + '</td><td>' + esc(l.vendor) + '</td><td>' + esc(l.desc) + '</td><td class="n">' + won(l.amt) + '</td></tr>').join('') + '</tbody></table></div>';
+      '<table class="tb" style="table-layout:fixed"><thead><tr><th style="width:44px">구분</th><th style="width:20%">계정</th><th style="width:18%">거래처</th><th>적요</th><th style="width:92px">예산</th><th class="right" style="width:105px">금액</th></tr></thead><tbody>' +
+      v.lines.map(l => '<tr><td>' + l.side + '</td><td>' + l.code + ' ' + esc(l.name) + '</td><td>' + esc(l.vendor) + '</td><td>' + esc(l.desc) + '</td><td class="mut">' + esc(l.bgt) + '</td><td class="n">' + won(l.amt) + '</td></tr>').join('') + '</tbody></table></div>';
   });
   if (!vs.length) h += '<div class="empty">아직 확인이 끝난 지출이 없습니다.</div>';
   return h + '</div>';
 };
 ACT.jrCsv = () => {
-  const rows = [['전표번호', '일자', '결의부서', '구분', '계정코드', '계정', '거래처', '적요', '금액']];
-  journal().forEach(v => v.lines.forEach(l => rows.push([v.no, v.date, v.g20, l.side, l.code, l.name, l.vendor, '"' + l.desc.replace(/"/g, "'") + '"', l.amt])));
+  const rows = [['전표번호', '일자', '결의부서', '구분', '계정코드', '계정명', '거래처', '금액', '적요', '예산구분']];
+  journal().forEach(v => v.lines.forEach(l => rows.push([v.no, v.date, v.g20, l.side === '차' ? '3' : '4', l.code, l.name, '"' + l.vendor.replace(/"/g, "'") + '"', l.amt, '"' + l.desc.replace(/"/g, "'") + '"', l.bgt])));
   download('G20_전표_2026-10.csv', rows.map(r => r.join(',')).join('\r\n'), 'text/csv;charset=utf-8'); log(S.me, '전표 파일', 'CSV'); save();
 };
 ACT.jrJson = () => { download('G20_전표_2026-10.json', JSON.stringify(journal(), null, 1), 'application/json'); };
@@ -451,13 +576,13 @@ document.addEventListener('change', ev => {
 document.addEventListener('input', ev => { if (ev.target.id === 'pv') { F.pv = num(ev.target.value); clearTimeout(F._t); F._t = setTimeout(() => { render(); const i = $('#pv'); if (i) { i.focus(); i.setSelectionRange(99, 99); } }, 350); } });
 V['settings/journal'] = () => {
   const J = S.jr;
-  return '<div class="g2"><div class="c"><h3>예산과목 > 계정코드</h3><table class="tb"><tbody>' + Object.entries(J.codes).map(([k, v]) => '<tr><td>' + k + '</td><td class="n">' + v + '</td></tr>').join('') + '</tbody></table>' +
+  return '<div class="g2"><div class="c"><h3>예산과목 > 계정코드 · 예산과목코드</h3><table class="tb"><thead><tr><th>예산과목</th><th class="right">계정코드</th><th class="right">G20 예산코드</th></tr></thead><tbody>' + Object.entries(J.codes).map(([k, v]) => '<tr><td>' + k + '</td><td class="n">' + v + '</td><td class="n">' + (BGT_CODE[v] || '-') + '</td></tr>').join('') + '</tbody></table>' +
     '<h3 style="margin-top:12px">G20 결의부서 코드</h3><table class="tb"><tbody>' + Object.entries(J.g20).map(([k, v]) => '<tr><td>' + k + '</td><td class="n">' + v + '</td></tr>').join('') + '</tbody></table></div>' +
     '<div class="c"><h3>분개 규칙</h3><table class="tb"><tbody>' + [
-      ['기본', '차변·대변을 항상 1:1 짝으로 만듭니다.'], ['법인카드', '대변 ' + J.card + ' 미지급금, 거래처는 카드(#번호)'], ['개인 돈 정산', '대변 거래처 ' + J.pvendor + ', 적요 끝에 (개인정산)'],
-      ['총무국 청구', '대변 2줄에 ' + J.adv + ' 0원 연결 줄을 더해 3줄, 적요 끝에 (청구정산)'], ['25일 규칙', '25일 정기 지급으로 나간 것은 ' + J.bank + ' 보통예금, 지급 전이면 ' + J.personal + ' 미지급금'],
-      ['소모품비', '한 달 치를 전표 1장으로 합칩니다.'], ['나눠 배정', '차변을 예산과목별로 나누고 대변은 1줄'],
-    ].map(([a, b]) => '<tr><td style="width:110px"><b>' + a + '</b></td><td>' + b + '</td></tr>').join('') + '</tbody></table><div class="mut" style="margin-top:6px">총무국 굿바이G20 전표입력 도구의 규칙을 옮긴 것입니다. 국마다 다르면 국별로 덮어쓸 수 있게 합니다.</div></div></div>';
+      ['기본', '항상 건별 1:1 차·대 쌍으로 분개하며 대변을 합치지 않습니다.'], ['법인카드', '대변 ' + J.card + ' 미지급금(법인카드), 차·대 거래처 모두 카드 거래처코드, 적요 맨 앞에 카드 M번호(#태그 제외)'], ['개인 돈 정산', '차·대 거래처 모두 부서 거래처(총무국 10024 등), 사람 이름은 적요에 기재'],
+      ['총무국 청구', '받는 사람이 직원이면 개인정산과 같이 차변 비용 / 대변 ' + J.personal + ' 미지급금, 거래처 부서(10024), 이름은 적요에'], ['업체 청구정산', '차변 비용 + 차변 ' + J.adv + ' 선급금 0원 + 대변(25일까지 ' + J.bank + ' 보통예금 90000 / 이후 ' + J.personal + ' 업체) = 3줄'], ['행사 결산', '차변 45102 주요행사비, 적요 「[행사결산]행사명: 소분류(내용)」 뒤에 카드면 「 : M번호(카드부서)」, 개인이면 「 (개인결재: 이름)」'],
+      ['소모품비', '카드·소모품비별 묶음 전표 생성 및 적요에 소모품비 명시'], ['예산 구분', '차변은 「집행 + G20 예산과목코드」, 대변은 「일반」'],
+    ].map(([a, b]) => '<tr><td style="width:110px"><b>' + a + '</b></td><td>' + b + '</td></tr>').join('') + '</tbody></table><div class="mut" style="margin-top:6px">총무국 굿바이G20 전표입력 도구의 규칙(실제 전표 443줄에서 확인)을 옮겼습니다. 사람이 받는 청구는 개인정산 2줄, 업체 청구정산만 13500 0원 줄을 더해 3줄입니다.</div></div></div>';
 };
 V['settings/switch'] = () => {
   const keys = [['총무국청구', '총무국 청구 9종'], ['스캔등록', '스캔으로 등록'], ['받을돈', '내가 받을 돈'], ['카드자동연결', '카드 자동 연결'], ['다른계좌', '이번만 다른 계좌'], ['예산차단', '예산 초과 제출 막기']];
@@ -478,5 +603,5 @@ V.help = () => '<div class="c"><h3>이 사이트에서 해 볼 것</h3><ol style
   '<li>지출·증빙 > 총무국 청구: 야근식대에서 같은 날 같은 사람을 다시 넣으면 막힙니다. 받을 계좌에서 「이번만 다른 계좌로 받기」를 해 봅니다.</li>' +
   '<li>위 「보는 사람」을 정예시(총무국장)로 바꿔 검토함 > 결재 차례에서 결재, 이예시로 바꿔 총무 확인, 오예시로 바꿔 검토(재정 확인)와 결산·출력 > 지급·송금을 합니다.</li>' +
   '<li>다시 김정래로 돌아와 지출·증빙 > 내가 받을 돈에서 단계가 바뀐 것을 봅니다.</li>' +
-  '<li>결산·출력 > 전표·G20, 예산 현황, 운영 점검(마감 잠금·백업), 감사 열람(변조 시험 > 변조 검사), 서비스 설정(규정값 새 버전, 결재 한도, 기능 스위치)도 눌러 봅니다.</li></ol>' +
+  '<li>결산·출력 > 결산(재정팀 공식 지출결의서·행사 예결산 보고서), 전표·G20(확정 분개 규칙 적용), 예산 현황, 운영 점검(마감 잠금·백업), 감사 열람(변조 시험 > 변조 검사), 서비스 설정도 눌러 봅니다.</li></ol>' +
   '<p class="mut" style="margin:10px 0 0">위쪽 「처음 상태로」를 누르면 예시 자료가 처음으로 돌아갑니다.</p></div>';
