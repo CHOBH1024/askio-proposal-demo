@@ -6,7 +6,7 @@ class H(http.server.SimpleHTTPRequestHandler):
     def end_headers(self):
         self.send_header('Cache-Control', 'no-store')
         super().end_headers()
-socketserver.TCPServer.allow_reuse_address = True
-with socketserver.TCPServer(('127.0.0.1', port), H) as s:
+http.server.ThreadingHTTPServer.allow_reuse_address = True
+with http.server.ThreadingHTTPServer(('127.0.0.1', port), H) as s:
     print('serving', os.getcwd(), 'on', port, flush=True)
     s.serve_forever()
